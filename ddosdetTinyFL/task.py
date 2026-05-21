@@ -5,9 +5,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from flwr_datasets import FederatedDataset
-from flwr_datasets.partitioner import IidPartitioner
+from flwr_datasets.partitioner import DirichletPartitioner
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.metrics import f1_score, precision_score
 from torch.utils.data import DataLoader, TensorDataset
 import torch.nn.functional as F
@@ -21,7 +21,14 @@ def load_data(partition_id: int, num_partitions: int, batch_size: int):
 
     global fds
     if fds is None:
-        partitioner = IidPartitioner(num_partitions=num_partitions) # Considering IID Data
+        
+        partitioner = DirichletPartitioner( # Considering Non IID Data
+            num_partitions=num_partitions,
+            partition_by=" Label", 
+            alpha=1.0,
+            seed=42,
+        )
+        
         fds = FederatedDataset(
             dataset=dataset_name,
             partitioners={"train": partitioner},
@@ -35,13 +42,13 @@ def load_data(partition_id: int, num_partitions: int, batch_size: int):
     X = dataset.drop(" Label", axis=1)
     y = dataset[" Label"]
 
-    # Divide data on each Node: 80% Train, 20% Test
+    # Divide Data on each Node: 80% Train, 20% Test
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
 
     # Preprocessing
-    scaler = StandardScaler()
+    scaler = MinMaxScaler()
     X_train = scaler.fit_transform(X_train)
     X_test = scaler.transform(X_test)
 
@@ -63,9 +70,9 @@ class DDoSClassifier(nn.Module):
     def __init__(self, input_size=14, num_classes=12):
 
         super(DDoSClassifier, self).__init__()
-        self.fc1 = nn.Linear(input_size, 64)
-        self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, num_classes)
+        self.fc1 = nn.Linear(input_size, 8)
+        self.fc2 = nn.Linear(8, 4)
+        self.fc3 = nn.Linear(4, num_classes)
 
     def forward(self, x):
 
@@ -84,12 +91,19 @@ def trainer(model, train_loader, num_epochs, lr):
     start_time = time.time()
     
     for epoch in range(num_epochs):
+        
         for X_batch, y_batch in train_loader:
+            
             optimizer.zero_grad()
+            
+            # Compute Prediction Error
             outputs = model(X_batch)
             loss = criterion(outputs, y_batch)
+            
+            # Backpropagation
             loss.backward()
             optimizer.step()
+            
             running_loss += loss.item()
 
     # Calculation of Model Training Metrics
@@ -108,7 +122,9 @@ def evaluator(model, test_loader):
     all_targets = []
     
     with torch.no_grad():
+
         for X_batch, y_batch in test_loader:
+            
             outputs = model(X_batch)
             batch_loss = criterion(outputs, y_batch)
             loss += batch_loss.item()
@@ -129,6 +145,8 @@ def evaluator(model, test_loader):
 
 def load_centralized_dataset():
     """Load Centralized Test set, preprocess it, and return a DataLoader yielding (X, y) tuples."""
+
+    batch_size = 32
    
     # Load the Dataset (Configure Dataset Splitting in the Online Repository)
     dataset = load_dataset(dataset_name, split="test").with_format("pandas")[:]
@@ -139,7 +157,7 @@ def load_centralized_dataset():
     y = dataset[" Label"]
 
     # Preprocessing (Must match the logic in load_data)
-    scaler = StandardScaler()
+    scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
 
     encoder = LabelEncoder()
@@ -151,4 +169,4 @@ def load_centralized_dataset():
         torch.tensor(y_encoded, dtype=torch.long)
     )
     
-    return DataLoader(test_ds, batch_size=128)
+    return DataLoader(test_ds, batch_size)

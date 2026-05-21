@@ -2,7 +2,7 @@
 
 import torch
 from flwr.serverapp import Grid, ServerApp
-from flwr.serverapp.strategy import FedAvg
+from flwr.serverapp.strategy import FedProx
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord
 from ddosdetTinyFL.task import DDoSClassifier, load_centralized_dataset, evaluator
 from ddosdetTinyFL.client_app import weighted_average_train, weighted_average_eval
@@ -23,8 +23,9 @@ def main(grid: Grid, context: Context) -> None:
     global_model = DDoSClassifier()
     arrays = ArrayRecord(global_model.state_dict())
 
-    # Initialize FedAvg strategy
-    strategy = FedAvg(
+    # Initialize FedProx strategy
+    strategy = FedProx(
+        proximal_mu=1.0,
         fraction_evaluate=fraction_evaluate,
         evaluate_metrics_aggr_fn=weighted_average_eval, # Aggregates Evaluation Metrics.
         train_metrics_aggr_fn=weighted_average_train,   # Aggregates Training metrics.
@@ -34,6 +35,7 @@ def main(grid: Grid, context: Context) -> None:
         grid=grid,
         initial_arrays=arrays,
         train_config=ConfigRecord({"lr": lr}),
+        evaluate_config=ConfigRecord({"lr": lr}),
         num_rounds=num_rounds,
         evaluate_fn=global_evaluate,
     )
@@ -43,7 +45,6 @@ def main(grid: Grid, context: Context) -> None:
     state_dict = result.arrays.to_torch_state_dict()
     
     torch.save(state_dict, "final-model.pt")
-
 
 def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
     """Evaluate model on central data from Dataset."""
