@@ -1,40 +1,48 @@
-"""Flower Server Definition for TinyFL Multiclass DDoS Detection for EdgeML and/or Embedded Devices"""
+"""Flower Server Definition for TinyFL Multiclass DDoS Detection for EdgeML and/or Embedded Devices.
+
+This server uses FedAvg and keeps the experimental variables centralized via
+`ddosdetTinyFL.experimental_config.ExperimentalConfig`.
+"""
 
 import torch
 import torch.nn as nn
 import torch.nn.utils.prune as prune
 
-from torchao.quantization import quantize_, Int8DynamicActivationInt8WeightConfig
+from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
 
-from flwr.serverapp import Grid, ServerApp
-from flwr.serverapp.strategy import FedProx
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord
-from ddosdetTinyFL.task import DDoSClassifier, load_centralized_dataset, evaluator
-from ddosdetTinyFL.client_app import weighted_average_train, weighted_average_eval
+from flwr.serverapp import Grid, ServerApp
+from flwr.serverapp.strategy import FedAvg
+
+from ddosdetTinyFL.client_app import weighted_average_eval, weighted_average_train
+from ddosdetTinyFL.experimental_config import get_default_config
+from ddosdetTinyFL.task import DDoSClassifier, evaluator, load_centralized_dataset
 
 # Create ServerApp
 app = ServerApp()
+
 
 @app.main()
 def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
 
-    # Read run config
-    fraction_evaluate: float = context.run_config["fraction-evaluate"]
-    num_rounds: int = context.run_config["num-server-rounds"]
-    lr: float = context.run_config["learning-rate"]
+    config = get_default_config()
+    fraction_evaluate: float = context.run_config.get("fraction-evaluate", config.fraction_evaluate)
+    num_rounds: int = context.run_config.get("num-server-rounds", config.num_server_rounds)
+    lr: float = context.run_config.get("learning-rate", config.learning_rate)
 
     # Init Global Model
     global_model = DDoSClassifier()
     arrays = ArrayRecord(global_model.state_dict())
 
-    # Initialize FedProx strategy
-    # FedProx tolerates the heterogeneity caused by Local Client Pruning
-    strategy = FedProx(
-        proximal_mu=1.0,
+    # Use FedAvg instead of FedProx
+    strategy = FedAvg(
+        fraction_fit=1.0,
         fraction_evaluate=fraction_evaluate,
-        evaluate_metrics_aggr_fn=weighted_average_eval, # Aggregates Evaluation Metrics
-        train_metrics_aggr_fn=weighted_average_train,   # Aggregates Training Metrics
+        min_fit_clients=1,
+        min_evaluate_clients=1,
+        evaluate_metrics_aggregation_fn=weighted_average_eval,
+        fit_metrics_aggregation_fn=weighted_average_train,
     )
 
     result = strategy.start(
@@ -46,58 +54,55 @@ def main(grid: Grid, context: Context) -> None:
         evaluate_fn=global_evaluate,
     )
 
-    # Saving the Final Models
-    print("\n[TinyFL Multiclass DDoS Detection] Processing and saving the Final Models...")
+    print("\n[TinyFL Multiclass DDoS Detection] Processing and saving the final models...")
     state_dict_final = result.arrays.to_torch_state_dict()
-    
-    # 1. Save the Standard Global Version (FP32) in case you want to resume Federated Training later
+
+    # 1. Save the standard global model (FP32)
     base_model = DDoSClassifier()
     base_model.load_state_dict(state_dict_final)
     torch.save(base_model.state_dict(), "final-model-fp32.pt")
-    
-    # 2. Generates and saves the Optimized Version for Edge/Embedded Devices (Pruned + Quantized)
-    for module in base_model.modules():
+
+    # 2. Save the optimized edge model (pruned + quantized)
+    optimized_model = DDoSClassifier()
+    optimized_model.load_state_dict(state_dict_final)
+    for module in optimized_model.modules():
         if isinstance(module, nn.Linear):
-            prune.l1_unstructured(module, name="weight", amount=0.25)
-            prune.remove(module, 'weight')
-            
-    quantize_(base_model, Int8DynamicActivationInt8WeightConfig())
-    
-    # Generates and saves the Optimized Version for Edge/Embedded (Pruned + Quantized)
-    torch.save(base_model.state_dict(), "final-model-edge-int8.pt")
-    print("[SUCCESS] Models Saved:")
-    print("  -> 'final-model-fp32.pt' (Base Model)")
-    print("  -> 'final-model-edge-int8.pt' (Optimized Model ready for Edge/Embedded Devices)")
+            prune.l1_unstructured(module, name="weight", amount=config.prune_ratio)
+            prune.remove(module, "weight")
+    quantize_(optimized_model, Int8DynamicActivationInt8WeightConfig())
+    torch.save(optimized_model.state_dict(), "final-model-edge-int8.pt")
+
+    print("[SUCCESS] Models saved:")
+    print("  -> 'final-model-fp32.pt' (Base model)")
+    print("  -> 'final-model-edge-int8.pt' (Optimized model ready for edge/embedded devices)")
 
 
 def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
-    """Evaluate Model on central data from Dataset applying Edge optimizations."""
+    """Evaluate the global model using the centralized test set.
 
-    # Load the Model and initialize it with the received Weights (FP32)
+    This is the comparison evaluation point. The repository can keep the same
+    metrics as before while the strategy is now FedAvg.
+    """
+
     global_model = DDoSClassifier()
     global_model.load_state_dict(arrays.to_torch_state_dict())
 
-    # [TinyML] Applies the same Client modifications for a fair evaluation
-    # 1. 25% Pruning
+    # Apply optimization for the embedded version during server-side evaluation
     for module in global_model.modules():
         if isinstance(module, nn.Linear):
             prune.l1_unstructured(module, name="weight", amount=0.25)
-            prune.remove(module, 'weight')
-
-    # 2. Dynamic Quantization to INT8
+            prune.remove(module, "weight")
     quantize_(global_model, Int8DynamicActivationInt8WeightConfig())
 
-    # Load entire Test set
     test_dataloader = load_centralized_dataset()
-
-    # Evaluate the Optimized Global Model on the Test set
     test_loss, test_acc, extra_metrics = evaluator(global_model, test_dataloader)
 
-    # Return the Evaluation Metrics
-    return MetricRecord({
-        "accuracy": test_acc, 
-        "loss": test_loss,
-        "f1_score": extra_metrics["f1_score"],
-        "precision": extra_metrics["precision"],
-        "recall": extra_metrics["recall"]
-    })
+    return MetricRecord(
+        {
+            "accuracy": test_acc,
+            "loss": test_loss,
+            "f1_score": extra_metrics["f1_score"],
+            "precision": extra_metrics["precision"],
+            "recall": extra_metrics["recall"],
+        }
+    )
