@@ -11,7 +11,7 @@ dependencies = [
     "flwr[simulation]>=1.29.0,<1.30.0",
     "flwr-datasets>=0.6.0,<0.7.0",
     "datasets>=3.0,<4.0",
-    "torch==2.8.0",
+    "torch>=2.8.0",
     "torchao>=0.13.0,<0.14.0",
     "scikit-learn==1.7.1",
     "psutil>=5.9.0,<8.0",
