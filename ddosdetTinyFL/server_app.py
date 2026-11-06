@@ -37,12 +37,10 @@ def main(grid: Grid, context: Context) -> None:
 
     # Use FedAvg instead of FedProx
     strategy = FedAvg(
-        fraction_fit=1.0,
+        fraction_train=1.0,
         fraction_evaluate=fraction_evaluate,
-        min_fit_clients=1,
-        min_evaluate_clients=1,
-        evaluate_metrics_aggregation_fn=weighted_average_eval,
-        fit_metrics_aggregation_fn=weighted_average_train,
+        evaluate_metrics_aggr_fn=weighted_average_eval,
+        train_metrics_aggr_fn=weighted_average_train,
     )
 
     result = strategy.start(
