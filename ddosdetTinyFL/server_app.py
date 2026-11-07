@@ -15,11 +15,27 @@ from flwr.serverapp import Grid, ServerApp
 from flwr.serverapp.strategy import FedAvg
 
 from ddosdetTinyFL.client_app import weighted_average_eval, weighted_average_train
-from ddosdetTinyFL.experimental_config import get_default_config
+from ddosdetTinyFL.experimental_config import ExperimentalConfig, get_default_config
 from ddosdetTinyFL.task import DDoSClassifier, evaluator, load_centralized_dataset
 
 # Create ServerApp
 app = ServerApp()
+
+
+def _optimize_model(model: nn.Module, config: ExperimentalConfig) -> nn.Module:
+    """Apply the configured pruning and quantization steps to a model."""
+    if config.enable_pruning:
+        for module in model.modules():
+            if isinstance(module, nn.Linear):
+                prune.l1_unstructured(
+                    module, name="weight", amount=config.pruning_amount
+                )
+                prune.remove(module, "weight")
+
+    if config.enable_quantization:
+        quantize_(model, Int8DynamicActivationInt8WeightConfig())
+
+    return model
 
 
 @app.main()
@@ -49,7 +65,9 @@ def main(grid: Grid, context: Context) -> None:
         train_config=ConfigRecord({"lr": lr}),
         evaluate_config=ConfigRecord({"lr": lr}),
         num_rounds=num_rounds,
-        evaluate_fn=global_evaluate,
+        evaluate_fn=lambda server_round, arrays: global_evaluate(
+            server_round, arrays, config
+        ),
     )
 
     print("\n[TinyFL Multiclass DDoS Detection] Processing and saving the final models...")
@@ -60,14 +78,10 @@ def main(grid: Grid, context: Context) -> None:
     base_model.load_state_dict(state_dict_final)
     torch.save(base_model.state_dict(), "final-model-fp32.pt")
 
-    # 2. Save the optimized edge model (pruned + quantized)
+    # 2. Save the optimized edge model using the configured optimization settings.
     optimized_model = DDoSClassifier()
     optimized_model.load_state_dict(state_dict_final)
-    for module in optimized_model.modules():
-        if isinstance(module, nn.Linear):
-            prune.l1_unstructured(module, name="weight", amount=config.prune_ratio)
-            prune.remove(module, "weight")
-    quantize_(optimized_model, Int8DynamicActivationInt8WeightConfig())
+    _optimize_model(optimized_model, config)
     torch.save(optimized_model.state_dict(), "final-model-edge-int8.pt")
 
     print("[SUCCESS] Models saved:")
@@ -75,22 +89,16 @@ def main(grid: Grid, context: Context) -> None:
     print("  -> 'final-model-edge-int8.pt' (Optimized model ready for edge/embedded devices)")
 
 
-def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
-    """Evaluate the global model using the centralized test set.
-
-    This is the comparison evaluation point. The repository can keep the same
-    metrics as before while the strategy is now FedAvg.
-    """
-
+def global_evaluate(
+    server_round: int,
+    arrays: ArrayRecord,
+    config: ExperimentalConfig | None = None,
+) -> MetricRecord:
+    """Evaluate the configured optimized global model using the centralized test set."""
+    config = config or get_default_config()
     global_model = DDoSClassifier()
     global_model.load_state_dict(arrays.to_torch_state_dict())
-
-    # Apply optimization for the embedded version during server-side evaluation
-    for module in global_model.modules():
-        if isinstance(module, nn.Linear):
-            prune.l1_unstructured(module, name="weight", amount=0.25)
-            prune.remove(module, "weight")
-    quantize_(global_model, Int8DynamicActivationInt8WeightConfig())
+    _optimize_model(global_model, config)
 
     test_dataloader = load_centralized_dataset()
     test_loss, test_acc, extra_metrics = evaluator(global_model, test_dataloader)
