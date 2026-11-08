@@ -97,12 +97,12 @@ def run_single_scenario(
         evaluate_fn = standard_global_evaluate
 
     strategy = FedAvg(
-        fraction_fit=1.0,
+        fraction_train=1.0,
         fraction_evaluate=config.fraction_evaluate,
-        min_fit_clients=1,
-        min_evaluate_clients=1,
-        evaluate_metrics_aggregation_fn=weighted_average_eval,
-        fit_metrics_aggregation_fn=weighted_average_train,
+        min_train_nodes=1,
+        min_evaluate_nodes=1,
+        evaluate_metrics_aggr_fn=weighted_average_eval,
+        train_metrics_aggr_fn=weighted_average_train,
     )
 
     result = strategy.start(
