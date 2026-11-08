@@ -27,7 +27,7 @@ fab-format-version = 1
 flwr-version-target = "1.29.0"
 
 [tool.flwr.app.components]
-serverapp = "ddosdetTinyFL.server_app:app"
+serverapp = "ddosdetTinyFL.main:app"
 clientapp = "ddosdetTinyFL.client_app:app"
 
 [tool.flwr.app.config]
