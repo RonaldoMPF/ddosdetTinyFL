@@ -15,7 +15,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.metrics import f1_score, precision_score, recall_score
 
-dataset_name = "RonaldoMPF/DDoSEdge-IIoTset"
+dataset_name = "RonaldoMPF/Edge-IIoTset"
 fds = None  # Cache FederatedDataset
 
 def load_data(partition_id: int, num_partitions: int, batch_size: int):
@@ -25,7 +25,7 @@ def load_data(partition_id: int, num_partitions: int, batch_size: int):
     if fds is None:
         partitioner = DirichletPartitioner(  # Considering Non-IID data
             num_partitions=num_partitions,
-            partition_by="Label", 
+            partition_by="Attack_type", 
             alpha=1.0,
             seed=42,
         )
@@ -39,8 +39,8 @@ def load_data(partition_id: int, num_partitions: int, batch_size: int):
     dataset = fds.load_partition(partition_id, "train").with_format("pandas")[:]
     dataset.dropna(inplace=True)
 
-    X = dataset.drop("Label", axis=1)
-    y = dataset["Label"]
+    X = dataset.drop("Attack_type", axis=1)
+    y = dataset["Attack_type"]
 
     # Splits the data at each Node: 70% Training, 30% Internal Validation
     X_train, X_validation, y_train, y_validation = train_test_split(
@@ -159,8 +159,8 @@ def load_centralized_dataset():
     dataset = load_dataset(dataset_name, split="test").with_format("pandas")[:]
     dataset.dropna(inplace=True)
 
-    X = dataset.drop("Label", axis=1)
-    y = dataset["Label"]
+    X = dataset.drop("Attack_type", axis=1)
+    y = dataset["Attack_type"]
 
     # Preprocessing aligned with local Client partitions
     scaler = MinMaxScaler()

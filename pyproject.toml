@@ -31,8 +31,8 @@ serverapp = "ddosdetTinyFL.main:app"
 clientapp = "ddosdetTinyFL.client_app:app"
 
 [tool.flwr.app.config]
-num-server-rounds = 10
-num-partitions = 6
+num-server-rounds = 3
+num-partitions = 2
 batch-size = 32
 learning-rate = 0.001
 local-epochs = 1
