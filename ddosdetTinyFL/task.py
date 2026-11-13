@@ -49,9 +49,9 @@ class DDoSClassifier(nn.Module):
         if num_classes is None:
             num_classes = len(get_label_encoder().classes_)
 
-        self.fc1 = nn.Linear(input_size, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, num_classes)
+        self.fc1 = nn.Linear(input_size, 4)
+        self.fc2 = nn.Linear(4, 2)
+        self.fc3 = nn.Linear(2, num_classes)
 
     def forward(self, x):
         # Functional ReLU is compatible with dynamic quantization of Linear layers.
