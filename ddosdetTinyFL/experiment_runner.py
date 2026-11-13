@@ -7,7 +7,7 @@ in JSON/CSV so they can be plotted and compared with the same data model.
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict
 
 import torch
 import torch.nn as nn
@@ -24,6 +24,27 @@ from ddosdetTinyFL.latency_profiler import profile_model_runtime_and_energy
 from ddosdetTinyFL.memory_profiler import analyze_model_memory_footprint
 from ddosdetTinyFL.metrics_collector import ComparativeMetricsAnalyzer, MetricsCollector
 from ddosdetTinyFL.task import DDoSClassifier, evaluator, load_centralized_dataset
+
+
+def _load_state_or_fallback(model: nn.Module, arrays: ArrayRecord | None) -> None:
+    """Validate Flower arrays before calling torch.load_state_dict."""
+    if arrays is None:
+        return
+
+    state = arrays.to_torch_state_dict()
+    expected = set(model.state_dict().keys())
+    actual = set(state.keys())
+    missing = expected - actual
+    unexpected = actual - expected
+
+    if missing or unexpected:
+        raise RuntimeError(
+            "State dict mismatch while loading Flower model. "
+            f"Missing keys: {sorted(missing)[:10]}, "
+            f"Unexpected keys: {sorted(unexpected)[:10]}"
+        )
+
+    model.load_state_dict(state)
 
 
 def apply_model_optimization(
@@ -48,7 +69,7 @@ def apply_model_optimization(
 def standard_global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
     """Evaluate the FP32 global model on the centralized test set."""
     model = DDoSClassifier()
-    model.load_state_dict(arrays.to_torch_state_dict())
+    _load_state_or_fallback(model, arrays)
     test_loader = load_centralized_dataset()
     loss, accuracy, extra_metrics = evaluator(model, test_loader)
     return MetricRecord(
@@ -65,7 +86,7 @@ def standard_global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRe
 def optimized_global_evaluate(server_round: int, arrays: ArrayRecord, prune_ratio: float = 0.25) -> MetricRecord:
     """Evaluate the pruned + quantized global model on the centralized test set."""
     model = DDoSClassifier()
-    model.load_state_dict(arrays.to_torch_state_dict())
+    _load_state_or_fallback(model, arrays)
     apply_model_optimization(model, prune_ratio=prune_ratio, enable_pruning=True, enable_quantization=True)
     test_loader = load_centralized_dataset()
     loss, accuracy, extra_metrics = evaluator(model, test_loader)
@@ -114,9 +135,8 @@ def run_single_scenario(
         evaluate_fn=evaluate_fn,
     )
 
-    final_state_dict = result.arrays.to_torch_state_dict()
     final_model = DDoSClassifier()
-    final_model.load_state_dict(final_state_dict)
+    _load_state_or_fallback(final_model, result.arrays)
 
     if optimize_model:
         final_model = apply_model_optimization(

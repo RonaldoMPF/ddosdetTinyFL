@@ -4,7 +4,6 @@ from flwr.clientapp import ClientApp
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from ddosdetTinyFL.task import DDoSClassifier, evaluator, load_data, trainer
 
-#import torch
 import torch.nn as nn
 import torch.nn.utils.prune as prune
 
@@ -13,13 +12,35 @@ from torchao.quantization import quantize_, Int8DynamicActivationInt8WeightConfi
 # Flower ClientApp
 app = ClientApp()
 
+
+def _load_state_or_fallback(model: nn.Module, arrays: ArrayRecord | None) -> None:
+    """Load a Flower ArrayRecord if present; otherwise keep the current model state."""
+    if arrays is None:
+        return
+
+    state = arrays.to_torch_state_dict()
+    expected = set(model.state_dict().keys())
+    actual = set(state.keys())
+    missing = expected - actual
+    unexpected = actual - expected
+
+    if missing or unexpected:
+        raise RuntimeError(
+            "State dict mismatch while loading Flower model. "
+            f"Missing keys: {sorted(missing)[:10]}, "
+            f"Unexpected keys: {sorted(unexpected)[:10]}"
+        )
+
+    model.load_state_dict(state)
+
+
 @app.train()
 def train(msg: Message, context: Context):
     """Train the Models in partitioned local data."""
 
     # Load Model
     net = DDoSClassifier()
-    net.load_state_dict(msg.content["arrays"].to_torch_state_dict())
+    _load_state_or_fallback(net, msg.content.get("arrays"))
 
     # Load partitioned Dataset
     partition_id = context.node_config["partition-id"]
@@ -41,9 +62,8 @@ def train(msg: Message, context: Context):
     for module in net.modules():
         if isinstance(module, nn.Linear):
             prune.l1_unstructured(module, name="weight", amount=0.25)
-            prune.remove(module, 'weight') # Fixes the zeros in the Weight Matrix.
+            prune.remove(module, "weight")
 
-    # Construct and return reply Message
     model_record = ArrayRecord(net.state_dict())
     metrics = {
         "train_loss": float(train_loss),
@@ -53,7 +73,7 @@ def train(msg: Message, context: Context):
 
     metric_record = MetricRecord(metrics)
     content = RecordDict({"arrays": model_record, "metrics": metric_record})
-    
+
     return Message(content=content, reply_to=msg)
 
 
@@ -63,7 +83,7 @@ def evaluate(msg: Message, context: Context):
 
     # Load Model
     model = DDoSClassifier()
-    model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
+    _load_state_or_fallback(model, msg.content.get("arrays"))
 
     # Load Dataset
     partition_id = context.node_config["partition-id"]
@@ -76,7 +96,7 @@ def evaluate(msg: Message, context: Context):
     for module in model.modules():
         if isinstance(module, nn.Linear):
             prune.l1_unstructured(module, name="weight", amount=0.25)
-            prune.remove(module, 'weight')
+            prune.remove(module, "weight")
 
     # [TinyML 2] Apply Dynamic Quantization (Converts FP32 -> INT8)
     # Simulates the actual execution of the Optimized Model on the Embedded/Edge Device
@@ -96,8 +116,9 @@ def evaluate(msg: Message, context: Context):
     }
 
     metric_record = MetricRecord(metrics)
-    content = RecordDict({"metrics": metric_record})
-    
+    model_record = ArrayRecord(model.state_dict())
+    content = RecordDict({"arrays": model_record, "metrics": metric_record})
+
     return Message(content=content, reply_to=msg)
 
 
@@ -109,7 +130,7 @@ def weighted_average_eval(content: list[RecordDict], server_round: str) -> Metri
     for c in content:
         metrics = c["metrics"]
         n = metrics["num-examples"]
-        
+
         acc_sum += metrics["accuracy"] * n
         f1_sum += metrics["f1_score"] * n
         prec_sum += metrics["precision"] * n
@@ -136,12 +157,12 @@ def weighted_average_train(content: list[RecordDict], server_round: str) -> Metr
     for c in content:
         metrics = c["metrics"]
         n = metrics["num-examples"]
-        
+
         loss_sum += metrics["train_loss"] * n
         duration_total += metrics["train_duration"]
         total_examples += n
         count += 1
-    
+
     aggregated = {"num-examples": total_examples}
     if total_examples > 0:
         aggregated["train_loss"] = loss_sum / total_examples
