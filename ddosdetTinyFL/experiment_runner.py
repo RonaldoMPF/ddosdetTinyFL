@@ -6,6 +6,7 @@ in JSON/CSV so they can be plotted and compared with the same data model.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict
 
@@ -26,12 +27,29 @@ from ddosdetTinyFL.metrics_collector import ComparativeMetricsAnalyzer, MetricsC
 from ddosdetTinyFL.task import DDoSClassifier, evaluator, load_centralized_dataset
 
 
+logger = logging.getLogger(__name__)
+
+
 def _load_state_or_fallback(model: nn.Module, arrays: ArrayRecord | None) -> None:
-    """Validate Flower arrays before calling torch.load_state_dict."""
+    """Load Flower arrays, retaining the initialized model if no arrays were returned.
+
+    Flower can return an empty ArrayRecord when a strategy run has no final
+    aggregated parameters. Treat that the same as ``None`` instead of passing an
+    empty state dict to ``load_state_dict``. Non-empty, incompatible state dicts
+    still raise so genuine model-architecture mismatches are not hidden.
+    """
     if arrays is None:
         return
 
     state = arrays.to_torch_state_dict()
+    if not state:
+        logger.warning(
+            "Flower returned an empty ArrayRecord; keeping the model's current "
+            "parameters. Check that clients returned an 'arrays' record from "
+            "training if this was not expected."
+        )
+        return
+
     expected = set(model.state_dict().keys())
     actual = set(state.keys())
     missing = expected - actual
